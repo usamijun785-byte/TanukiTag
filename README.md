@@ -12,10 +12,10 @@ TanukiTagは、大量の画像・動画・ドキュメントを高速サムネ�
 
 ## スクリーンショット
 
-![メイン画面（テーマダーク）](images/tanuki1.jpg){: width="300" }
-![サムネ縮小、テーマ変更も出来ます](images/tanuki3.jpg){: width="300" }
-![動画向けにサムネグリッドの他価値を横長にも出来ます](images/tanuki2.jpg){: width="300" }
-![フォントサイズ変更も可能です。](images/tanuki4.jpg){: width="300" }
+![メイン画面（テーマダーク）](images/tanuki1.jpg)
+![サムネ縮小、テーマ変更も出来ます](images/tanuki3.jpg)
+![動画向けにサムネグリッドの他価値を横長にも出来ます](images/tanuki2.jpg)
+![フォントサイズ変更も可能です。](images/tanuki4.jpg)
 
 ---
 
