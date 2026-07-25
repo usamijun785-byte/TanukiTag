@@ -10,6 +10,13 @@ TanukiTagは、大量の画像・動画・ドキュメントを高速サムネ�
 
 ### [**ダウンロード（GitHub Releases）**](https://github.com/usamijun785-byte/TanukiTag/releases)
 
+## スクリーンショット
+
+![メイン画面（テーマダーク）](images/tanuki1.png)
+![サムネ縮小、テーマ変更も出来ます](images/tanuki3.png)
+![動画向けにサムネグリッドの他価値を横長にも出来ます](images/tanuki2.png)
+![フォントサイズ変更も可能です。](images/tanuki4.png)
+
 ---
 
 ## 🌟 主な機能と特徴
