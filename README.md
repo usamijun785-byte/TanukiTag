@@ -8,7 +8,7 @@ TanukiTagは、大量の画像・動画・ドキュメントを高速サムネ�
 自動タグ付けやFFmpeg連携、フォント・UIの細かなカスタマイズに対応し、高速閲覧と自由度の高い分類を実現します。
 ※閲覧や再生は外部の既定アプリで行う設計のため、お気に入りのビューワーと組み合わせて快適に使えます。
 
-### [**ダウンロード（GitHub Releases）→**](https://github.com/usamijun785-byte/TanukiTag/releases)
+### [**ダウンロード（GitHub Releases）**](https://github.com/usamijun785-byte/TanukiTag/releases)
 
 ---
 
