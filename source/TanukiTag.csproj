@@ -1,0 +1,128 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>TanukiTag</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- .exeのアイコン（エクスプローラー上のアイコン表示・タスクバー等）に使用 -->
+    <ApplicationIcon>Assets\tag.ico</ApplicationIcon>
+    <Platforms>x86;x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- 非パッケージ化（MSIX無し）。WinLauncher/画像ビューワーと同じ配布方針に合わせる -->
+    <WindowsPackageType>None</WindowsPackageType>
+    
+    <!-- ★ ここから変更 ★ -->
+    <SelfContained>true</SelfContained>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- ★ ここまで変更 ★ -->
+
+    <!-- 各パッケージが同梱する多言語リソースDLL（cs/, de/, es/, ja/ 等の大量のサブフォルダ）は、
+         このアプリでは言語切り替えUIを持たないため不要。ここで絞ることで発行後のフォルダから
+         これらのサブフォルダごと出力されなくなり、ファイル数がかなり減る
+         （DLL本体をサブフォルダへ移す手法はWinUI 3のネイティブ依存関係と相性が悪く
+         起動時クラッシュの危険があるため見送り、こちらの安全な方法で対応する）。 -->
+    <SatelliteResourceLanguages>ja</SatelliteResourceLanguages>
+
+    <!-- NU1902: SharpCompressの既知の脆弱性(GHSA-6c8g-7p36-r338)警告を抑制。
+         これは archive.WriteToDirectory() でのパストラバーサル(zip slip)の問題であり、
+         本プロジェクトは OpenEntryStream() で画像1枚をメモリに読むだけで WriteToDirectory() は
+         使用しないため影響を受けない。2026年時点で修正版も存在しないため抑制のみで対応する。 -->
+    <NoWarn>$(NoWarn);NU1902</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.5.240311000" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.756" />
+    <!-- サムネイルキャッシュ用（Python版のSQLite BLOBキャッシュと同じ設計） -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.4" />
+    <!-- 画像デコード/リサイズ用（Windows専用アプリなので使用可）。Color型（背景色の受け渡し）
+         のためだけに残している。実際のデコードはSixLabors.ImageSharpと、JPEGについては
+         任意でnative/FastJpegDecoder（libjpeg-turboのDCTスケールデコード、未配置時は
+         自動的にImageSharpにフォールバック）が担当する。 -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.4" />
+    <!-- サムネイル生成の実処理はこちらを使用。System.Drawing(GDI+)はWebPをデコードできないため、
+         WebP/PNG/GIF(アニメ含む先頭フレーム)/BMP/TIFF等を管理コードのみでデコードできる
+         ImageSharpに置き換えた（Services/ThumbnailGenerator.cs参照）。System.Drawing.Commonは
+         Color型（背景色の受け渡し）のためだけに残している。 -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
+    <!-- AVIF/HEICサムネイル対応のため追加。ImageSharp本体は標準ではAVIFをデコードできないため、
+         libheif(AOMedia libavif同梱)をラップしたHeyRed.ImageSharp.Heifを使用し、
+         ThumbnailGenerator.csの静的コンストラクタでConfiguration.Defaultに
+         AvifConfigurationModuleを登録することで、既存のImage.Load呼び出しをそのまま使う。
+         LibHeif.Native.win-x64はlibheif本体(ネイティブDLL)。 -->
+    <PackageReference Include="HeyRed.ImageSharp.Heif" Version="2.1.3" />
+    <PackageReference Include="LibHeif.Native.win-x64" Version="1.15.1" />
+    <!-- ZIP以外の圧縮コミック/アーカイブ形式（.cbr/.rar, .7z）にサムネイル・ファイル一覧対応するため追加。
+         System.IO.Compression はZIPしか扱えず、RAR/7zはunrar.exe等の外部ツール無しには読めないため、
+         管理コードのみで完結するSharpCompressに統一（ZIPも含めて同じAPIで読める）。 -->
+    <PackageReference Include="SharpCompress" Version="0.37.2" />
+    <!-- PDFの1ページ目をサムネイル化するため追加。PDFium（Chromiumが使うPDFレンダラー）を
+         ネイティブ同梱するDocnet.Coreを使用し、追加の外部ツールインストール無しに
+         Windows専用アプリ内で完結してラスタライズできるようにしている。 -->
+    <PackageReference Include="Docnet.Core" Version="2.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <!-- FastJpegDecoder.dll（と依存のjpeg62.dll、libjpeg-turboの動的リンク版ランタイム）を、
+       exeと同じ出力フォルダへビルド時に自動コピーする。これまでは手動配置が必要だった。
+       DLL本体はこのTanukiTagプロジェクトフォルダ直下（TanukiTag.csprojと同じ場所）に
+       配置しておく。x64向けにビルドされたDLLなので、x64ビルドのときだけ含める
+       （x86/ARM64ビルドでは含めない。仮に含めてもServices/FastJpegDecoder.cs側は
+       DLL読み込み失敗時に自動でImageSharpへフォールバックするため実害は無いが、
+       そもそも動かないファイルを配っても意味が無いため）。 -->
+  <ItemGroup>
+    <!-- タスクバー/タイトルバーアイコン用。exe自体のアイコン(ApplicationIcon)とは別に、
+         MainWindow.xaml.csからAppWindow.SetIcon()で実行時に読み込むため出力フォルダへコピーする。 -->
+    <Content Include="Assets\tag.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Platform)' == 'x64' or '$(RuntimeIdentifier)' == 'win-x64'">
+    <Content Include="FastJpegDecoder.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="jpeg62.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- WindowsAppSDKSelfContained=true が生成する Windows App SDK 本体(WinUIネイティブ部分)の
+       言語フォルダ(af-ZA, am-ET, ar-SA...)を削除する。SatelliteResourceLanguagesはNuGet依存の
+       サテライトDLLにしか効かず、SDK本体のMUIフォルダには効かないため、ビルド/発行後に
+       ja-JP(とフォールバック用en-us)以外のロケール名フォルダを物理削除する。
+       AfterTargets="Build;Publish" によりデバッグビルドでも発行でも同様に効く。
+       ついでにRestartAgent.exe（Windows App SDKの「プッシュ通知/アプリ再起動」機能用の
+       補助プロセス）も削除する。本アプリはプッシュ通知もAppInstance.Restart等の
+       再起動APIも使用していないため不要（Microsoft公式のGitHub Issueでも「使わない機能なら
+       削除して問題ない」ファイルの例として名指しされている）。 -->
+  <Target Name="RemoveWindowsAppSDKLanguageFolders" AfterTargets="Build;Publish">
+    <ItemGroup>
+      <_OutDirs Include="$(OutDir)" Condition="'$(OutDir)' != ''" />
+      <_OutDirs Include="$(PublishDir)" Condition="'$(PublishDir)' != ''" />
+    </ItemGroup>
+    <ItemGroup>
+      <_CandidateDirs Include="$([System.IO.Directory]::GetDirectories('%(_OutDirs.Identity)'))" Condition="Exists('%(_OutDirs.Identity)')" />
+      <_LangFoldersToRemove Include="@(_CandidateDirs)"
+        Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(Filename)', '^[a-z]{2,3}(-[A-Za-z]+)?(-[A-Z]+)?$')) and '%(Filename)' != 'ja-JP' and '%(Filename)' != 'en-us' and '%(Filename)' != 'en-US'" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_LangFoldersToRemove)" Condition="'@(_LangFoldersToRemove)' != ''" />
+    <Message Text="Removed WindowsAppSDK language folders: @(_LangFoldersToRemove)" Importance="high" Condition="'@(_LangFoldersToRemove)' != ''" />
+
+    <ItemGroup>
+      <_RestartAgentToRemove Include="%(_OutDirs.Identity)RestartAgent.exe" Condition="Exists('%(_OutDirs.Identity)RestartAgent.exe')" />
+    </ItemGroup>
+    <Delete Files="@(_RestartAgentToRemove)" Condition="'@(_RestartAgentToRemove)' != ''" />
+    <Message Text="Removed RestartAgent.exe: @(_RestartAgentToRemove)" Importance="high" Condition="'@(_RestartAgentToRemove)' != ''" />
+  </Target>
+
+</Project>

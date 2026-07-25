@@ -1,0 +1,14 @@
+<Application
+    x:Class="TanukiTag.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+            <!-- スクロールバーの太さ。自前スクロールバー(CustomVScrollTrack/Thumb)の幅としても使用 -->
+            <x:Double x:Key="ScrollBarSize">19</x:Double>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
