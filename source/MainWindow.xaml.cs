@@ -123,6 +123,9 @@ public sealed partial class MainWindow : Window
     private double _rbStartScrollOffset;   // ドラッグ開始時点のVerticalOffset（オートスクロール時に開始点を補正するため）
     private bool _rbActive;          // 閾値を超えて実際にドラッグ選択が始まったか
     private DispatcherTimer? _rbAutoScrollTimer;   // ドラッグ選択中、端に近づいた時の自動スクロール用
+    private DispatcherTimer? _tagAutoScrollTimer;  // タグ一覧へファイルをドラッグ中、端に近づいた時の自動スクロール用
+    private Windows.Foundation.Point? _tagLastPointerPos; // ↑ 直近のポインタ位置（ウィンドウ座標）
+    private ScrollViewer? _tagScrollViewer;        // TagListView内部のScrollViewer（遅延取得）
     private Windows.Foundation.Point? _rbLastPointerPos; // 自動スクロール中も参照する最新のポインタ位置（ビューポート座標）
     private const double CellWidth = 168;   // GridView.ItemTemplateの実サイズ(160)+Margin(4*2)
     private const double CellHeight = 220;  // 同上(212+4*2)
@@ -1071,11 +1074,23 @@ public sealed partial class MainWindow : Window
     // ドラッグ中のファイルID一覧を DataPackage の Text に載せる際の目印。
     // 通常のテキストドロップ（例えばURLやファイルパスの文字列）と区別するために使う。
     private const string FileIdsPrefix = "TAGFILER_FILE_IDS:";
+    private const string TagIdsPrefix = "TAGFILER_TAG_IDS:";
 
     private static List<long> ParseDraggedFileIds(string text)
     {
         if (!text.StartsWith(FileIdsPrefix, StringComparison.Ordinal)) return new List<long>();
         return text[FileIdsPrefix.Length..]
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => long.TryParse(s, out var v) ? (long?)v : null)
+            .Where(v => v.HasValue)
+            .Select(v => v!.Value)
+            .ToList();
+    }
+
+    private static List<long> ParseDraggedTagIds(string text)
+    {
+        if (!text.StartsWith(TagIdsPrefix, StringComparison.Ordinal)) return new List<long>();
+        return text[TagIdsPrefix.Length..]
             .Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(s => long.TryParse(s, out var v) ? (long?)v : null)
             .Where(v => v.HasValue)
@@ -1417,6 +1432,29 @@ public sealed partial class MainWindow : Window
         e.Data.Properties.Title = $"+{ids.Count} 件";
     }
 
+    /// <summary>TagListViewでのドラッグ開始。選択中のタグ行のタグID一覧をDataPackageに載せる
+    /// （ThumbGridView_DragItemsStartingのファイルID版に相当）。
+    /// グループヘッダー行・フォルダ行はタグ付け対象にならないため、ドラッグ項目から除外する。
+    /// 対象がタグ行に一つも残らない場合はドラッグ自体をキャンセルする。</summary>
+    private void TagListView_DragItemsStarting(object sender, DragItemsStartingEventArgs e)
+    {
+        var tagIds = e.Items.OfType<NavRow>()
+            .Where(r => !r.IsGroupHeader && !r.IsFolder)
+            .Select(r => r.TagId)
+            .Distinct()
+            .ToList();
+        if (tagIds.Count == 0)
+        {
+            e.Cancel = true;
+            return;
+        }
+        e.Data.SetText(TagIdsPrefix + string.Join(",", tagIds));
+        e.Data.RequestedOperation = DataPackageOperation.Copy;
+        e.Data.Properties.Title = tagIds.Count == 1
+            ? "タグを追加"
+            : $"タグ {tagIds.Count} 件を追加";
+    }
+
     /// <summary>ドラッグ中のビジュアルを、既定のセルのスクリーンショット（サムネイル画像）ではなく
     /// DataPackageの内容（「+N件」のキャプション）だけの吹き出しにする。
     /// GridViewItem.DragStartingでSetContentFromDataPackage()を呼ぶことで既定のサムネイル表示を抑制できる。</summary>
@@ -1429,14 +1467,37 @@ public sealed partial class MainWindow : Window
     /// 内部のファイル一覧からのドラッグ（Text: ファイルID一覧）と、
     /// エクスプローラー等外部からのファイルドラッグ（StorageItems）の両方を受け付ける。
     /// 以前はTextのみ受け付けていたため、エクスプローラーから直接タグへドロップしても
-    /// 何も起こらなかった（DragOverの時点でAcceptedOperationが設定されず拒否されていた）。</summary>
-    private void TagListView_DragOver(object sender, DragEventArgs e)
+    /// 何も起こらなかった（DragOverの時点でAcceptedOperationが設定されず拒否されていた）。
+    /// ここでホバー中タグのチップ表示と、狭いゾーンでの自前の自動スクロールも行う
+    /// （TagListView内部ScrollViewerの既定の自動スクロールは感度を公開APIから調整できないため、
+    /// 完全に置き換えるのではなく、それとは別にこちらのタイマーでも操作する）。</summary>
+    private void TagDropOverlay_DragOver(object sender, DragEventArgs e)
     {
         if (!e.DataView.Contains(StandardDataFormats.Text) && !e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            HideTagHoverChip();
             return;
+        }
         e.AcceptedOperation = DataPackageOperation.Copy;
         e.DragUIOverride.Caption = "ドロップしてタグを追加／フォルダを登録";
         e.DragUIOverride.IsGlyphVisible = false;
+
+        var pos = e.GetPosition(null);
+        _tagLastPointerPos = pos;
+        UpdateTagHoverChip(pos);
+        StartTagAutoScrollTimer();
+    }
+
+    private void TagDropOverlay_DragEnter(object sender, DragEventArgs e)
+    {
+        StartTagAutoScrollTimer();
+    }
+
+    /// <summary>タグ一覧の外へドラッグが抜けた/ドロップされた時にチップと自動スクロールを止める。</summary>
+    private void TagDropOverlay_DragLeave(object sender, DragEventArgs e)
+    {
+        StopTagAutoScrollTimer();
+        HideTagHoverChip();
     }
 
     /// <summary>ドロップ位置の直下にあるタグ行（NavRow）を取得する（マウスホバーしているタグを特定するため）。
@@ -1458,8 +1519,12 @@ public sealed partial class MainWindow : Window
     /// 外部からのファイルは、ライブラリに未登録なら先に追加してからタグ付けする。
     /// また、フォルダをドロップした場合はタグ付けではなく、タグリストへの「フォルダ」ショートカット
     /// 登録として扱う（既存のタグ行の上に重なっているかどうかは問わない）。</summary>
-    private async void TagListView_Drop(object sender, DragEventArgs e)
+    private async void TagDropOverlay_Drop(object sender, DragEventArgs e)
     {
+        StopTagAutoScrollTimer();
+        HideTagHoverChip();
+        TagDropOverlay.IsHitTestVisible = false;
+
         if (!e.DataView.Contains(StandardDataFormats.StorageItems))
         {
             await HandleInternalDragTextDrop(e);
@@ -1522,6 +1587,90 @@ public sealed partial class MainWindow : Window
         AssignTagToFiles(row, ids);
     }
 
+    // ── タグへのドラッグ中：ホバー中タグのチップ表示 ──────────────────
+    /// <summary>マウスカーソル付近に、現在ホバーしているタグのチップを表示する。
+    /// posはウィンドウ座標系（DragEventArgs.GetPosition(null)と同じ）。</summary>
+    private void UpdateTagHoverChip(Windows.Foundation.Point pos)
+    {
+        var row = GetTagRowAtPosition(pos);
+        if (row == null)
+        {
+            HideTagHoverChip();
+            return;
+        }
+
+        TagHoverChipText.Text = row.Label;
+        if (row.DotVisibility == Visibility.Visible)
+        {
+            TagHoverChipDot.Background = row.ColorBrush;
+            TagHoverChipDot.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            TagHoverChipDot.Visibility = Visibility.Collapsed;
+        }
+
+        // カーソルの少し右下に表示する。チップ自体がカーソルの下に隠れて
+        // ドロップ位置の判定が見えなくならないよう、オフセットを付ける。
+        const double offsetX = 16;
+        const double offsetY = 20;
+        Canvas.SetLeft(TagHoverChip, pos.X + offsetX);
+        Canvas.SetTop(TagHoverChip, pos.Y + offsetY);
+        TagHoverChip.Visibility = Visibility.Visible;
+    }
+
+    private void HideTagHoverChip()
+    {
+        TagHoverChip.Visibility = Visibility.Collapsed;
+    }
+
+    // ── タグへのドラッグ中：自動スクロール ────────────────────────
+    // TagListView内部のScrollViewerが持つ既定の自動スクロールとは別に、こちらでも
+    // 狭いスクロール開始ゾーン・低速なスクロール量のタイマーを実装している。
+    private void StartTagAutoScrollTimer()
+    {
+        if (_tagAutoScrollTimer != null) return;
+        _tagAutoScrollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(30) };
+        _tagAutoScrollTimer.Tick += TagAutoScrollTimer_Tick;
+        _tagAutoScrollTimer.Start();
+    }
+
+    private void StopTagAutoScrollTimer()
+    {
+        if (_tagAutoScrollTimer == null) return;
+        _tagAutoScrollTimer.Stop();
+        _tagAutoScrollTimer.Tick -= TagAutoScrollTimer_Tick;
+        _tagAutoScrollTimer = null;
+    }
+
+    private void TagAutoScrollTimer_Tick(object? sender, object e)
+    {
+        if (_tagLastPointerPos == null) return;
+        _tagScrollViewer ??= FindDescendant<ScrollViewer>(TagListView);
+        if (_tagScrollViewer == null) return;
+
+        // 以前のTagListView既定の自動スクロールは端から~40-50px程度の広い範囲で反応していた。
+        // ここではedgeMarginを狭くして、本当に端に近づいた時だけスクロールし始めるようにする。
+        const double edgeMargin = 22;   // この距離だけ端に近づくとスクロールし始める（狭め）
+        const double maxSpeed = 8;      // 端ぎりぎりでの最大スクロール量(px/tick)（遅め）
+
+        var origin = TagListView.TransformToVisual(RootGrid).TransformPoint(new Windows.Foundation.Point(0, 0));
+        var y = _tagLastPointerPos.Value.Y - origin.Y;
+        var height = TagListView.ActualHeight;
+
+        double delta;
+        if (y < edgeMargin) delta = -maxSpeed * ((edgeMargin - Math.Max(0, y)) / edgeMargin);
+        else if (y > height - edgeMargin) delta = maxSpeed * ((Math.Min(height, y) - (height - edgeMargin)) / edgeMargin);
+        else delta = 0;
+
+        if (delta == 0) return;
+
+        var maxOffset = Math.Max(0, _tagScrollViewer.ExtentHeight - _tagScrollViewer.ViewportHeight);
+        var newOffset = Math.Clamp(_tagScrollViewer.VerticalOffset + delta, 0, maxOffset);
+        if (Math.Abs(newOffset - _tagScrollViewer.VerticalOffset) >= 0.01)
+            _tagScrollViewer.ChangeView(null, newOffset, null, disableAnimation: true);
+    }
+
     /// <summary>指定ファイルID群へタグを追加し、グリッド上の表示とタグリストの件数を更新する。</summary>
     private void AssignTagToFiles(NavRow row, List<long> ids)
     {
@@ -1549,7 +1698,7 @@ public sealed partial class MainWindow : Window
         else if (e.DataView.Contains(StandardDataFormats.Text))
         {
             e.AcceptedOperation = DataPackageOperation.Copy;
-            e.DragUIOverride.Caption = "タグを選んで追加";
+            e.DragUIOverride.Caption = "ファイルの上で離してタグ付け";
             e.DragUIOverride.IsGlyphVisible = false;
         }
     }
@@ -1621,10 +1770,39 @@ public sealed partial class MainWindow : Window
         if (e.DataView.Contains(StandardDataFormats.Text))
         {
             var text = await e.DataView.GetTextAsync();
+
+            // タグ一覧からドラッグしてきたタグをファイルへドロップ：ホバーしていたファイルだけに付与する。
+            var tagIds = ParseDraggedTagIds(text);
+            if (tagIds.Count > 0)
+            {
+                var hovered = GetFileItemAtPosition(e.GetPosition(null));
+                if (hovered == null) return; // ファイルの上以外でのドロップは何もしない
+
+                var tagNames = _db.GetAllTags().Where(t => tagIds.Contains(t.Id)).Select(t => t.Name).ToList();
+                foreach (var tid in tagIds) _db.AddFileTag(hovered.Id, tid);
+                SetItemTags(hovered, _db.GetFileTags(hovered.Id));
+
+                RefreshNavList();
+                TagActionStatusText.Text = $"「{hovered.DisplayName}」に「{string.Join("、", tagNames)}」を追加しました。";
+                return;
+            }
+
             var ids = ParseDraggedFileIds(text);
             if (ids.Count == 0) return;
             await ShowMultiTagPickerAsync(ids);
         }
+    }
+
+    /// <summary>ドロップ位置の直下にあるファイル項目（FileItem）を取得する
+    /// （タグをファイルへドラッグ&ドロップしてタグ付けする際、ホバー中のファイルを特定するため）。
+    /// posはウィンドウ座標系（DragEventArgs.GetPosition(null)と同じ）。</summary>
+    private FileItem? GetFileItemAtPosition(Windows.Foundation.Point pos)
+    {
+        var container = VisualTreeHelper.FindElementsInHostCoordinates(pos, ThumbGridView)
+            .Select(el => FindAncestor<GridViewItem>(el))
+            .FirstOrDefault(c => c != null);
+        if (container == null) return null;
+        return ThumbGridView.ItemFromContainer(container) as FileItem;
     }
 
     /// <summary>複数ファイルへ一括でタグを選択・追加するダイアログ（Python版 _show_tag_picker 相当）</summary>
@@ -2371,6 +2549,25 @@ public sealed partial class MainWindow : Window
         }
 
         await SubmitNewGroupAsync();
+    }
+
+    /// <summary>ウィンドウ内へドラッグが入った時に、タグエリアの受け皿（TagDropOverlay）を
+    /// 有効化する。普段はIsHitTestVisible=Falseにしてあるのでクリック・右クリックの邪魔をしないが、
+    /// ドラッグ中だけ受け付けられるようにし、TagListView内部ScrollViewerの既定の自動スクロール
+    /// （感度調整不可）ではなく、こちらの自前の自動スクロールが使われるようにする。</summary>
+    private void RootGrid_DragEnter(object sender, DragEventArgs e)
+    {
+        TagDropOverlay.IsHitTestVisible = true;
+    }
+
+    /// <summary>ドラッグがウィンドウの外へ出た時に受け皿を無効化する。
+    /// （TagDropOverlay内でのDragLeave/Dropでも無効化しているが、ウィンドウ外へ出て
+    /// ドラッグ自体が終わるケースの保険として、ここでも止める。）</summary>
+    private void RootGrid_DragLeave(object sender, DragEventArgs e)
+    {
+        TagDropOverlay.IsHitTestVisible = false;
+        StopTagAutoScrollTimer();
+        HideTagHoverChip();
     }
 
     /// <summary>タグ名入力欄・グループ名入力欄が表示されている状態で、それぞれの入力欄・
@@ -4850,7 +5047,7 @@ public sealed partial class MainWindow : Window
         // ── バージョン表示（設定の一番下）────────────────────────────
         panel.Children.Add(new TextBlock
         {
-            Text = "TanukiTag v1.0.0",
+            Text = "TanukiTag v1.0.1",
             FontSize = 11,
             Opacity = 0.5,
             Margin = new Thickness(0, 8, 0, 0),

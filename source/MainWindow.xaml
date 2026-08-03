@@ -7,7 +7,10 @@
     xmlns:services="using:TanukiTag.Services">
 
     <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
-          PointerPressed="RootGrid_PointerPressed">
+          PointerPressed="RootGrid_PointerPressed"
+          AllowDrop="True"
+          DragEnter="RootGrid_DragEnter"
+          DragLeave="RootGrid_DragLeave">
         <Grid.Resources>
             <!-- サムネイル未生成/失敗時に見える背景色。ApplyTheme() でテーマに合わせて更新される。 -->
             <SolidColorBrush x:Key="ThumbCellBackgroundBrush" Color="#3A3A3A" />
@@ -108,9 +111,8 @@
                           SelectionChanged="TagListView_SelectionChanged"
                           RightTapped="TagListView_RightTapped"
                           DoubleTapped="TagListView_DoubleTapped"
-                          AllowDrop="True"
-                          DragOver="TagListView_DragOver"
-                          Drop="TagListView_Drop"
+                          CanDragItems="True"
+                          DragItemsStarting="TagListView_DragItemsStarting"
                           ItemsSource="{x:Bind NavRows, Mode=OneWay}">
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
@@ -161,6 +163,21 @@
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
+
+                <!-- TagListViewの上に重ねる透明なドロップ受け皿。既定は非表示（IsHitTestVisible=False）で、
+                     通常のクリック・右クリックには一切影響しない。ウィンドウ全体へのドラッグ開始
+                     （RootGrid_DragEnter）でのみ一時的に有効化し、ドラッグ終了で無効化する。
+                     TagListView自体にAllowDrop/DragOverを付けると、内部のScrollViewerがDragOverを
+                     先取りして既定の自動スクロール（感度を調整できず、常に速い）を行ってしまうため、
+                     ドラッグ中だけこちらでイベントを受けて、狭いゾーン・低速な自動スクロールと
+                     ホバー中タグのチップ表示を自前で行う。 -->
+                <Border x:Name="TagDropOverlay" Grid.Row="1" Background="Transparent"
+                        IsHitTestVisible="False"
+                        AllowDrop="True"
+                        DragEnter="TagDropOverlay_DragEnter"
+                        DragOver="TagDropOverlay_DragOver"
+                        DragLeave="TagDropOverlay_DragLeave"
+                        Drop="TagDropOverlay_Drop" />
 
                 <!-- タグ・フォルダが1件も登録されていない起動直後だけ、TagListViewの空欄に
                      使い方の説明を重ねて表示する。以前は下の「タグ+」ボタン上に固定表示していたが、
@@ -509,5 +526,21 @@
             </Canvas>
             </Grid>
         </Grid>
+
+        <!-- タグへドラッグ中、マウスカーソル付近にホバー中のタグ名を表示するチップ。
+             RootGrid直下（Grid.RowSpan="2"）に置くことで、DragEventArgs.GetPosition(null)と
+             同じウィンドウ座標系でCanvas.Left/Topを指定できる。 -->
+        <Canvas x:Name="TagHoverChipCanvas" Grid.Row="0" Grid.RowSpan="2" IsHitTestVisible="False">
+            <Border x:Name="TagHoverChip" Visibility="Collapsed"
+                    Background="{ThemeResource SystemControlBackgroundChromeMediumBrush}"
+                    BorderBrush="{ThemeResource SystemControlForegroundBaseMediumBrush}"
+                    BorderThickness="1" CornerRadius="6" Padding="8,4">
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                    <Border x:Name="TagHoverChipDot" Width="8" Height="8" CornerRadius="4"
+                            VerticalAlignment="Center" Visibility="Collapsed" />
+                    <TextBlock x:Name="TagHoverChipText" FontSize="12" VerticalAlignment="Center" />
+                </StackPanel>
+            </Border>
+        </Canvas>
     </Grid>
 </Window>
